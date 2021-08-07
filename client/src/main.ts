@@ -1,3 +1,6 @@
+import geckos from '@geckos.io/client'
+import { Messages } from '../../common'
+
 import backgroundImage from './images/background.png'
 import spritesImage from './images/sprites.png'
 
@@ -48,9 +51,10 @@ interface Car {
   sprite: Sprite
   speed: number
   percent: number
+  id: number
 }
 
-const cars: Car[] = [] // array of cars on the road
+let cars: Car[] = [] // array of cars on the road
 
 const canvas = document.getElementById('canvas')! as HTMLCanvasElement
 const ctx: CanvasRenderingContext2D = canvas.getContext('2d')!
@@ -80,7 +84,6 @@ const breaking = -maxSpeed // deceleration rate when braking
 const decel = -maxSpeed / 5 // 'natural' deceleration rate when neither accelerating, nor braking
 const offRoadDecel = -maxSpeed / 2 // off road deceleration is somewhere in between
 const offRoadLimit = maxSpeed / 4 // limit when off road deceleration no longer applies (e.g. you can always go at least this speed even when off road)
-const totalCars = 5 // total number of cars on the road
 let currentLapTime = 0 // current lap time
 
 let leftPressed = false
@@ -178,77 +181,14 @@ function update(dt: number) {
 function updateCars(dt: number, playerSegment: Segment, playerW: number) {
   for (const car of cars) {
     const oldSegment = findSegment(car.z)
-    car.offset =
-      car.offset + updateCarOffset(car, oldSegment, playerSegment, playerW)
-    car.z = increase(car.z, dt * car.speed, trackLength)
-    car.percent = percentRemaining(car.z, segmentLength) // useful for interpolation during rendering phase
+    car.offset = car.offset // TODO NETWORKING MOVE LR
+    car.z = car.percent = percentRemaining(car.z, segmentLength) // TODO NETWORKING MOVE FORWARDS // useful for interpolation during rendering phase
     const newSegment = findSegment(car.z)
     if (oldSegment != newSegment) {
       const index = oldSegment.cars.indexOf(car)
       oldSegment.cars.splice(index, 1)
       newSegment.cars.push(car)
     }
-  }
-}
-
-function updateCarOffset(
-  car: Car,
-  carSegment: Segment,
-  playerSegment: Segment,
-  playerW: number
-) {
-  const lookahead = 20
-  const carW = car.sprite.w * SPRITE_SCALE
-
-  // optimization, dont bother steering around other cars when 'out of sight' of the player
-  if (carSegment.index - playerSegment.index > drawDistance) return 0
-
-  for (let i = 1; i < lookahead; i++) {
-    const segment = segments[(carSegment.index + i) % segments.length]
-
-    if (
-      segment === playerSegment &&
-      car.speed > speed &&
-      overlap(playerX, playerW, car.offset, carW, 1.2)
-    ) {
-      let dir
-      if (playerX > 0.5) {
-        dir = -1
-      } else if (playerX < -0.5) {
-        dir = 1
-      } else {
-        dir = car.offset > playerX ? 1 : -1
-      }
-      return (((dir * 1) / i) * (car.speed - speed)) / maxSpeed // the closer the cars (smaller i) and the greated the speed ratio, the larger the offset
-    }
-
-    for (let j = 0; j < segment.cars.length; j++) {
-      const otherCar = segment.cars[j]
-      const otherCarW = otherCar.sprite.w * SPRITE_SCALE
-      if (
-        car.speed > otherCar.speed &&
-        overlap(car.offset, carW, otherCar.offset, otherCarW, 1.2)
-      ) {
-        let dir
-        if (otherCar.offset > 0.5) {
-          dir = -1
-        } else if (otherCar.offset < -0.5) {
-          dir = 1
-        } else {
-          dir = car.offset > otherCar.offset ? 1 : -1
-        }
-        return (((dir * 1) / i) * (car.speed - otherCar.speed)) / maxSpeed
-      }
-    }
-  }
-
-  // if no cars ahead, but I have somehow ended up off road, then steer back on
-  if (car.offset < -0.9) {
-    return 0.1
-  } else if (car.offset > 0.9) {
-    return -0.1
-  } else {
-    return 0
   }
 }
 
@@ -627,7 +567,6 @@ function resetRoad() {
   addDownhillToEnd()
 
   resetSprites()
-  resetCars()
 
   segments[findSegment(playerZ).index + 2].color = COLORS.ROAD.START
   segments[findSegment(playerZ).index + 3].color = COLORS.ROAD.START
@@ -684,32 +623,77 @@ function resetSprites() {
   }
 }
 
-function resetCars() {
-  cars.length = 0
-  for (let n = 0; n < totalCars; n++) {
-    const offset = Math.random() * randomChoice([-0.8, 0.8])
-    const z = Math.floor(Math.random() * segments.length) * segmentLength
-    const sprite = randomChoice(CAR_SPRITES)
-    const speed =
-      maxSpeed / 4 +
-      (Math.random() * maxSpeed) / (sprite == SPRITES.SEMI ? 4 : 2)
-    const car: Car = {
-      offset: offset,
-      z: z,
-      sprite: sprite,
-      speed: speed,
-      percent: 0
-    }
-    const segment = findSegment(car.z)
-    segment.cars.push(car)
-    cars.push(car)
+function reset(options: {
+  width?: number
+  height?: number
+  lanes?: number
+  roadWidth?: number
+  cameraHeight?: number
+  drawDistance?: number
+  fogDensity?: number
+  fieldOfView?: number
+  segmentLength?: number
+  rumbleLength?: number
+}) {
+  options = options || {}
+  canvas.width = width = options.width ?? width
+  canvas.height = height = options.height ?? height
+  lanes = options.lanes ?? lanes
+  roadWidth = options.roadWidth ?? roadWidth
+  cameraHeight = options.cameraHeight ?? cameraHeight
+  drawDistance = options.drawDistance ?? drawDistance
+  fogDensity = options.fogDensity ?? fogDensity
+  fieldOfView = options.fieldOfView ?? fieldOfView
+  segmentLength = options.segmentLength ?? segmentLength
+  rumbleLength = options.rumbleLength ?? rumbleLength
+  cameraDepth = 1 / Math.tan(((fieldOfView / 2) * Math.PI) / 180)
+  playerZ = cameraHeight * cameraDepth
+  resolution = height / 480
+
+  if (segments.length == 0 || options.segmentLength || options.rumbleLength) {
+    resetRoad()
   }
 }
+
+const resolutions = {
+  low: { width: 480, height: 360 },
+  medium: { width: 640, height: 480 },
+  high: { width: 1024, height: 768 },
+  ultra: { width: 1280, height: 960 }
+} as const
 
 //=========================================================================
 // THE GAME LOOP
 //=========================================================================
 
+const channel = geckos<Messages>({
+  url: `${location.protocol}//${location.hostname}`,
+  port: 9208
+})
+
+channel.on('cars_list', (list) => {
+  // remove old cars
+  cars = cars.filter((c) => list.ids.includes(c.id))
+  const newCars = list.ids.filter((id) => !cars.map((c) => c.id).includes(id))
+  cars.push(
+    ...newCars.map((id) => ({
+      id,
+      offset: 0,
+      z: 0,
+      sprite: CAR_SPRITES[id % CAR_SPRITES.length],
+      speed: 0,
+      percent: 0
+    }))
+  )
+})
+
+channel.onConnect(() => {
+  console.log('CONNECTED TO SERVER!')
+})
+channel.onDisconnect(() => {
+  console.warn('DISCONNNECTED FROM SERVER!')
+})
+console.log(channel)
 runGame({
   canvas: canvas,
   render: render,
@@ -782,42 +766,3 @@ runGame({
     reset({})
   }
 })
-
-function reset(options: {
-  width?: number
-  height?: number
-  lanes?: number
-  roadWidth?: number
-  cameraHeight?: number
-  drawDistance?: number
-  fogDensity?: number
-  fieldOfView?: number
-  segmentLength?: number
-  rumbleLength?: number
-}) {
-  options = options || {}
-  canvas.width = width = options.width ?? width
-  canvas.height = height = options.height ?? height
-  lanes = options.lanes ?? lanes
-  roadWidth = options.roadWidth ?? roadWidth
-  cameraHeight = options.cameraHeight ?? cameraHeight
-  drawDistance = options.drawDistance ?? drawDistance
-  fogDensity = options.fogDensity ?? fogDensity
-  fieldOfView = options.fieldOfView ?? fieldOfView
-  segmentLength = options.segmentLength ?? segmentLength
-  rumbleLength = options.rumbleLength ?? rumbleLength
-  cameraDepth = 1 / Math.tan(((fieldOfView / 2) * Math.PI) / 180)
-  playerZ = cameraHeight * cameraDepth
-  resolution = height / 480
-
-  if (segments.length == 0 || options.segmentLength || options.rumbleLength) {
-    resetRoad()
-  }
-}
-
-const resolutions = {
-  low: { width: 480, height: 360 },
-  medium: { width: 640, height: 480 },
-  high: { width: 1024, height: 768 },
-  ultra: { width: 1280, height: 960 }
-} as const
