@@ -1,32 +1,49 @@
-import geckos from '@geckos.io/server'
+import WebSocket, { Server } from 'ws'
+import { CarPositionMessage } from '../../common/'
 
-import { Messages } from '../../common'
+interface Client {
+  id: number
+  socket: WebSocket
+  offset: number
+  z: number
+}
+let clients: Client[] = []
+const wss = new Server({
+  port: 8080
+})
 
-let cars_list: number[] = []
-const io = geckos<Messages>()
+wss.on('connection', (socket) => {
+  const id = Math.round(Math.random() * 1000000)
+  const me = { id, socket, offset: 0, z: 0 }
+  clients.push(me)
+  console.log(`${id} got connected`)
 
-io.listen()
+  socket.onclose = () => {
+    clients = clients.filter((car) => car.id !== id)
 
-io.onConnection((channel) => {
-  const newId = (cars_list[cars_list.length - 1] ?? 0) + 1
-  cars_list.push(newId)
-
-  channel.emit('cars_list', {
-    ids: cars_list
-  })
-
-  channel.onDisconnect(() => {
-    cars_list = cars_list.filter((car) => car !== newId)
-
-    console.log(`${channel.id} got disconnected`)
-
-    channel.emit('cars_list', {
-      ids: cars_list
-    })
-  })
-
-  channel.on('car_position', (data) => {
-    console.log(`got ${data} from "car position"`)
-    io.room(channel.roomId).emit('car_position', data)
+    console.log(`${id} got disconnected`)
+  }
+  socket.addEventListener('message', ({ data }) => {
+    const parsed = JSON.parse(data)
+    if ('offset' in parsed && 'z' in parsed) {
+      me.offset = parsed.offset
+      me.z = parsed.z
+    }
   })
 })
+
+// 60fps network updates
+const RATE = (1 / 60) * 1000
+
+const emitPositions = () => {
+  for (const client of clients) {
+    const msg = JSON.stringify({
+      cars: clients
+        .filter((c) => c.id !== client.id)
+        .map(({ id, offset, z }) => ({ id, offset, z }))
+    })
+    client.socket.send(msg)
+  }
+  setTimeout(emitPositions, RATE)
+}
+emitPositions()

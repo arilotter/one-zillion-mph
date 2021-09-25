@@ -1,4 +1,8 @@
 export interface CarPosition {
+  offset: number
+  z: number
+}
+export interface CarPositionMessage {
   id: number
   position: { offset: number; z: number }
 }
@@ -9,10 +13,4 @@ export interface JoinServer {
 
 export interface CarsList {
   ids: number[]
-}
-
-export interface Messages {
-  car_position: CarPosition
-  join_server: JoinServer
-  cars_list: CarsList
 }

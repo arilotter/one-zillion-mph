@@ -1,5 +1,4 @@
-import geckos from '@geckos.io/client'
-import { Messages } from '../../common'
+import { CarPosition, Messages } from '../../common'
 
 import backgroundImage from './images/background.png'
 import spritesImage from './images/sprites.png'
@@ -106,10 +105,13 @@ function update(dt: number) {
   else if (rightPressed) playerX = playerX + dx
 
   playerX = playerX - dx * speedPercent * playerSegment.curve * centrifugal
-
-  if (accelPressed) speed = accelerate(speed, accel, dt)
-  else if (brakePressed) speed = accelerate(speed, breaking, dt)
-  else speed = accelerate(speed, decel, dt)
+  if (accelPressed) {
+    speed = accelerate(speed, accel, dt)
+  } else if (brakePressed) {
+    speed = accelerate(speed, breaking, dt)
+  } else {
+    speed = accelerate(speed, decel, dt)
+  }
 
   if (playerX < -1 || playerX > 1) {
     if (speed > offRoadLimit) speed = accelerate(speed, offRoadDecel, dt)
@@ -182,7 +184,8 @@ function updateCars(dt: number, playerSegment: Segment, playerW: number) {
   for (const car of cars) {
     const oldSegment = findSegment(car.z)
     car.offset = car.offset // TODO NETWORKING MOVE LR
-    car.z = car.percent = percentRemaining(car.z, segmentLength) // TODO NETWORKING MOVE FORWARDS // useful for interpolation during rendering phase
+    car.z = increase(car.z, dt * car.speed, trackLength)
+    car.percent = percentRemaining(car.z, segmentLength) // TODO NETWORKING MOVE FORWARDS // useful for interpolation during rendering phase
     const newSegment = findSegment(car.z)
     if (oldSegment != newSegment) {
       const index = oldSegment.cars.indexOf(car)
@@ -190,6 +193,11 @@ function updateCars(dt: number, playerSegment: Segment, playerW: number) {
       newSegment.cars.push(car)
     }
   }
+  const pos: CarPosition = {
+    offset: playerX,
+    z: position + playerZ
+  }
+  ws.send(JSON.stringify(pos))
 }
 
 function render() {
@@ -542,28 +550,28 @@ function addDownhillToEnd(num: number = 200) {
 function resetRoad() {
   segments.length = 0
 
-  addStraight(ROAD.LENGTH.SHORT)
-  addStraight(ROAD.LENGTH.SHORT)
-  addStraight(ROAD.LENGTH.SHORT)
-  addStraight(ROAD.LENGTH.SHORT)
-  addStraight(ROAD.LENGTH.SHORT)
-  addStraight(ROAD.LENGTH.SHORT)
-  // addLowRollingHills()
-  // addSCurves()
-  // addCurve(ROAD.LENGTH.MEDIUM, ROAD.CURVE.MEDIUM, ROAD.HILL.LOW)
-  // addBumps()
-  // addLowRollingHills()
-  // addCurve(ROAD.LENGTH.LONG * 2, ROAD.CURVE.MEDIUM, ROAD.HILL.MEDIUM)
-  // addStraight()
-  // addHill(ROAD.LENGTH.MEDIUM, ROAD.HILL.HIGH)
-  // addSCurves()
-  // addCurve(ROAD.LENGTH.LONG, -ROAD.CURVE.MEDIUM, ROAD.HILL.NONE)
-  // addHill(ROAD.LENGTH.LONG, ROAD.HILL.HIGH)
-  // addCurve(ROAD.LENGTH.LONG, ROAD.CURVE.MEDIUM, -ROAD.HILL.LOW)
-  // addBumps()
-  // addHill(ROAD.LENGTH.LONG, -ROAD.HILL.MEDIUM)
-  // addStraight()
-  // addSCurves()
+  // addStraight(ROAD.LENGTH.SHORT)
+  // addStraight(ROAD.LENGTH.SHORT)
+  // addStraight(ROAD.LENGTH.SHORT)
+  // addStraight(ROAD.LENGTH.SHORT)
+  // addStraight(ROAD.LENGTH.SHORT)
+  // addStraight(ROAD.LENGTH.SHORT)
+  addLowRollingHills()
+  addSCurves()
+  addCurve(ROAD.LENGTH.MEDIUM, ROAD.CURVE.MEDIUM, ROAD.HILL.LOW)
+  addBumps()
+  addLowRollingHills()
+  addCurve(ROAD.LENGTH.LONG * 2, ROAD.CURVE.MEDIUM, ROAD.HILL.MEDIUM)
+  addStraight()
+  addHill(ROAD.LENGTH.MEDIUM, ROAD.HILL.HIGH)
+  addSCurves()
+  addCurve(ROAD.LENGTH.LONG, -ROAD.CURVE.MEDIUM, ROAD.HILL.NONE)
+  addHill(ROAD.LENGTH.LONG, ROAD.HILL.HIGH)
+  addCurve(ROAD.LENGTH.LONG, ROAD.CURVE.MEDIUM, -ROAD.HILL.LOW)
+  addBumps()
+  addHill(ROAD.LENGTH.LONG, -ROAD.HILL.MEDIUM)
+  addStraight()
+  addSCurves()
   addDownhillToEnd()
 
   resetSprites()
@@ -666,34 +674,51 @@ const resolutions = {
 // THE GAME LOOP
 //=========================================================================
 
-const channel = geckos<Messages>({
-  url: `${location.protocol}//${location.hostname}`,
-  port: 9208
-})
-
-channel.on('cars_list', (list) => {
-  // remove old cars
-  cars = cars.filter((c) => list.ids.includes(c.id))
-  const newCars = list.ids.filter((id) => !cars.map((c) => c.id).includes(id))
-  cars.push(
-    ...newCars.map((id) => ({
-      id,
-      offset: 0,
-      z: 0,
-      sprite: CAR_SPRITES[id % CAR_SPRITES.length],
+const ws = new WebSocket('ws://localhost:8080')
+ws.addEventListener('message', (message) => {
+  if (!segments.length) {
+    return
+  }
+  const data = JSON.parse(message.data)
+  if ('cars' in data) {
+    const d = data as { cars: Array<{ id: number; offset: number; z: number }> }
+    const ids = d.cars.map((c) => c.id)
+    const existingIDs = cars.map((c) => c.id)
+    cars = cars.filter((c) => ids.includes(c.id))
+    const newCars = d.cars.filter((car) => !existingIDs.includes(car.id))
+    const c = newCars.map((car) => ({
+      id: car.id,
+      offset: car.offset,
+      z: car.z,
+      sprite: CAR_SPRITES[car.id % CAR_SPRITES.length],
       speed: 0,
       percent: 0
     }))
-  )
+    cars.push(...c)
+    for (const newCar of c) {
+      const segment = findSegment(newCar.z)
+      segment.cars.push(newCar)
+    }
+    for (const car of cars) {
+      const remoteCar = d.cars.find((c) => c.id === car.id)
+      if (!remoteCar) {
+        throw new Error('Expected one remote car for each local car')
+      }
+      const oldSegment = findSegment(car.z)
+
+      car.offset = remoteCar.offset
+      car.z = remoteCar.z
+
+      const newSegment = findSegment(car.z)
+      if (oldSegment != newSegment) {
+        const index = oldSegment.cars.indexOf(car)
+        oldSegment.cars.splice(index, 1)
+        newSegment.cars.push(car)
+      }
+    }
+  }
 })
 
-channel.onConnect(() => {
-  console.log('CONNECTED TO SERVER!')
-})
-channel.onDisconnect(() => {
-  console.warn('DISCONNNECTED FROM SERVER!')
-})
-console.log(channel)
 runGame({
   canvas: canvas,
   render: render,
